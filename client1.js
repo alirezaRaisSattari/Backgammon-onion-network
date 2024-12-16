@@ -1,29 +1,18 @@
-const http = require("http");
+const net = require("net");
 
-// Make a request to Node 1
-const options = {
-  hostname: "localhost",
-  port: 3000,
-  method: "GET",
-  headers: {
-    "Content-Type": "text/plain",
-  },
+const { keys, encryptLayer } = require("./encryption");
+
+const sendEncryptedMessage = () => {
+  let message = Buffer.from("Hello, Onion Routing!");
+  keys.reverse().forEach((key) => {
+    message = encryptLayer(message, key);
+  });
+
+  const client = new net.Socket();
+  client.connect(3000, "localhost", () => {
+    console.log("Client sent:", message.toString("hex"));
+    client.write(message);
+  });
 };
 
-const req = http.request(options, (res) => {
-  let data = "";
-
-  res.on("data", (chunk) => {
-    data += chunk;
-  });
-
-  res.on("end", () => {
-    console.log("Client 1 received response:", data);
-  });
-});
-
-req.on("error", (error) => {
-  console.error(error);
-});
-
-req.end();
+sendEncryptedMessage();

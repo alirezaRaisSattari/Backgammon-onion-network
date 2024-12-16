@@ -1,24 +1,28 @@
 const crypto = require("crypto");
 
-// AES encryption settings
-const algorithm = "aes-256-cbc";
-const key = crypto.randomBytes(32); // Secret key for encryption (this should be shared across proxies)
-const iv = crypto.randomBytes(16); // Initialization vector for encryption (this should also be shared across proxies)
+const generateKey = () => crypto.randomBytes(32); // 256-bit key
+const keys = [generateKey(), generateKey(), generateKey()];
 
-// Encrypt data and return base64 encoded data
-function encrypt(text) {
-  const cipher = crypto.createCipheriv(algorithm, key, iv);
-  let encrypted = cipher.update(text, "utf8", "base64");
-  encrypted += cipher.final("base64");
-  return encrypted;
-}
+const encryptLayer = (data, key) => {
+  const cipher = crypto.createCipheriv("aes-256-cbc", key, Buffer.alloc(16, 0));
+  return Buffer.concat([cipher.update(data), cipher.final()]);
+};
 
-// Decrypt data from base64
-function decrypt(encrypted) {
-  const decipher = crypto.createDecipheriv(algorithm, key, iv);
-  let decrypted = decipher.update(encrypted, "base64", "utf8");
-  decrypted += decipher.final("utf8");
-  return decrypted;
-}
+const decryptLayer = (data, key) => {
+  const decipher = crypto.createDecipheriv(
+    "aes-256-cbc",
+    key,
+    Buffer.alloc(16, 0)
+  );
+  return Buffer.concat([decipher.update(data), decipher.final()]);
+};
 
-module.exports = { encrypt, decrypt };
+// Sample message
+let message = Buffer.from("Hello, Onion Routing!");
+keys.reverse().forEach((key) => {
+  message = encryptLayer(message, key);
+});
+
+console.log("Encrypted Message:", message.toString("hex"));
+
+module.exports = { decryptLayer, encryptLayer, keys };
