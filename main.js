@@ -1,41 +1,11 @@
-const express = require("express");
-const app = express();
-const { setupOnionNetwork, clientSendHttpRequest } = require("./routers1.js");
+const http = require("http");
 
-const port = 8000;
-
-app.get("/hello", (req, res) => {
-  res.send("Hello, world!");
+// Create the target server (final destination)
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("Hello from the target server on port 8000!");
 });
 
-app.listen(port, () => {
-  console.log(`Server is running on http://localhost:${port}`);
+server.listen(8000, () => {
+  console.log("Target server is running on http://localhost:8000");
 });
-
-const routerCountClient1 = 3;
-const firstRouterPort4Client1 = 3000;
-const routerCountClient2 = 3;
-const firstRouterPort4Client2 = 4000;
-const main = 8000;
-
-const client1routers = setupOnionNetwork(
-  routerCountClient1,
-  firstRouterPort4Client1,
-  main
-);
-
-const client2routers = setupOnionNetwork(
-  routerCountClient2,
-  firstRouterPort4Client2,
-  main
-);
-
-setTimeout(() => {
-  const httpRequest = `GET / HTTP/1.1\nHost: localhost\n\n`;
-  clientSendHttpRequest(httpRequest, client1routers);
-}, 1000);
-
-setTimeout(() => {
-  const httpRequest = `GET / HTTP/1.1\nHost: localhost\n\n`;
-  clientSendHttpRequest(httpRequest, client2routers);
-}, 1000);
