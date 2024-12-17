@@ -5,6 +5,7 @@ const crypto = require("crypto");
 const ENCRYPTION_KEY = crypto.randomBytes(32); // 256-bit key
 const IV_LENGTH = 16; // AES block size
 
+// Track IVs for each request-response cycle
 const ivMap = new Map();
 
 function encryptStream(key, iv, input) {
@@ -37,9 +38,11 @@ function createProxyNode(nodeNumber, port) {
       const isLastNode = nodeNumber === 3;
 
       if (isFirstNode) {
+        // Generate a new IV for the request at the first node
         iv = crypto.randomBytes(IV_LENGTH);
         req.headers["x-init-vector"] = iv.toString("hex");
       } else {
+        // Extract the IV from the header
         const ivHeader = req.headers["x-init-vector"];
         if (!ivHeader) {
           throw new Error(`Missing x-init-vector header at Node ${nodeNumber}`);
@@ -49,6 +52,7 @@ function createProxyNode(nodeNumber, port) {
 
       let processedStream = req;
 
+      // Decrypt incoming request body at intermediate and exit nodes
       if (!isFirstNode) {
         processedStream = decryptStream(ENCRYPTION_KEY, iv, req);
         logBody(processedStream, (body) =>
@@ -60,6 +64,7 @@ function createProxyNode(nodeNumber, port) {
         );
       }
 
+      // Handle request at exit node or forward
       if (isLastNode) {
         const options = {
           hostname: "localhost",
@@ -70,6 +75,7 @@ function createProxyNode(nodeNumber, port) {
         };
 
         const externalReq = http.request(options, (externalRes) => {
+          // Encrypt the response from the server using the original request IV
           const responseIv = iv;
           res.setHeader("x-response-vector", responseIv.toString("hex"));
 
@@ -84,6 +90,7 @@ function createProxyNode(nodeNumber, port) {
           );
           encryptedStream.pipe(res).on("finish", () => {
             console.log(`Node ${nodeNumber} sent encrypted response`);
+            encryptedStream.end();
           });
         });
 
@@ -93,11 +100,15 @@ function createProxyNode(nodeNumber, port) {
           res.end("Error contacting external server");
         });
 
-        processedStream.pipe(externalReq);
+        processedStream.pipe(externalReq).on("finish", () => {
+          processedStream.end();
+        });
       } else {
+        // Encrypt request body and forward to the next node
         const nextIv = crypto.randomBytes(IV_LENGTH);
         req.headers["x-init-vector"] = nextIv.toString("hex");
 
+        // Track IV for this request-response cycle
         const requestId = req.headers["x-request-id"] || crypto.randomUUID();
         req.headers["x-request-id"] = requestId;
         ivMap.set(requestId, nextIv);
@@ -113,55 +124,49 @@ function createProxyNode(nodeNumber, port) {
           buffer: encryptedStream,
         });
 
+        // Handle the response from the next node
         proxy.on("proxyRes", (proxyRes) => {
+          // Retrieve the IV for this response
           const responseIv = ivMap.get(req.headers["x-request-id"]);
+
+          // Decrypt the response using the same IV as the request
           const decryptedStream = decryptStream(
             ENCRYPTION_KEY,
             responseIv,
             proxyRes
           );
-          let bodyChunks = [];
 
-          decryptedStream.on("data", (chunk) => bodyChunks.push(chunk));
-          decryptedStream.on("end", () => {
-            const body = Buffer.concat(bodyChunks).toString();
-            console.log(`Node ${nodeNumber} decrypted response:`, body);
+          if (isFirstNode) {
+            // Decrypt response at Node 1 and send it to the client
+            logBody(decryptedStream, (body) =>
+              console.log(`Node ${nodeNumber} decrypted response:`, body)
+            );
 
-            if (isFirstNode) {
-              // res.setHeader("Content-Type", "application/json");
-              console.log(body);
-              res.end(body); // This sends the exact body logged to the client
-              console.log(body);
+            decryptedStream.pipe(res).on("finish", () => {
               console.log(
                 `Node ${nodeNumber} sent decrypted response to client`
               );
               ivMap.delete(req.headers["x-request-id"]);
-            } else {
-              console.log("xxxxx", body);
-
-              const previousIv = Buffer.from(
-                req.headers["x-init-vector"],
-                "hex"
-              );
-              const reEncryptedStream = encryptStream(
-                ENCRYPTION_KEY,
-                previousIv,
-                decryptedStream
-              );
-              reEncryptedStream.pipe(res).on("finish", () => {
-                console.log(`Node ${nodeNumber} sent encrypted response`);
-              });
-            }
-          });
-
-          decryptedStream.on("error", (error) => {
-            console.error(
-              `Node ${nodeNumber} decryption error:`,
-              error.message
+              decryptedStream.end();
+            });
+          } else {
+            // Re-encrypt the response for the previous node
+            const previousIv = Buffer.from(req.headers["x-init-vector"], "hex");
+            const reEncryptedStream = encryptStream(
+              ENCRYPTION_KEY,
+              previousIv,
+              decryptedStream
             );
-            res.statusCode = 500;
-            res.end("Error in decrypting response");
-          });
+
+            logBody(decryptedStream, (body) =>
+              console.log(`Node ${nodeNumber} decrypted response:`, body)
+            );
+
+            reEncryptedStream.pipe(res).on("finish", () => {
+              console.log(`Node ${nodeNumber} sent encrypted response`);
+              reEncryptedStream.end();
+            });
+          }
         });
       }
     } catch (error) {
@@ -178,6 +183,7 @@ function createProxyNode(nodeNumber, port) {
   });
 }
 
+// Function to create a specified number of proxy nodes
 function createProxyNodes(numNodes, startPort) {
   let currentPort = startPort;
 
@@ -187,4 +193,7 @@ function createProxyNodes(numNodes, startPort) {
   }
 }
 
+// router for client1
 createProxyNodes(3, 3000);
+// router for client2
+// createProxyNodes(3, 4000);
