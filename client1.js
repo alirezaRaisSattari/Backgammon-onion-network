@@ -15,8 +15,7 @@
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    const data = await response.json(); // Use response.text() if the response isn't JSON
-    console.log("Response Data:", data);
+    console.log("Response Data:", await response.text());
   } catch (error) {
     console.error("Error:", error.message);
   }
