@@ -1,29 +1,23 @@
-const http = require("http");
+(async () => {
+  const fetch = (await import("node-fetch")).default;
 
-// Make a request to Node 1
-const options = {
-  hostname: "localhost",
-  port: 3000,
-  method: "GET",
-  headers: {
-    "Content-Type": "text/plain",
-  },
-};
+  const url = "http://localhost:3000";
+  const payload = { key: "value" }; // Example payload
 
-const req = http.request(options, (res) => {
-  let data = "";
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
 
-  res.on("data", (chunk) => {
-    data += chunk;
-  });
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
 
-  res.on("end", () => {
-    console.log("Client 1 received response:", data);
-  });
-});
-
-req.on("error", (error) => {
-  console.error(error);
-});
-
-req.end();
+    const data = await response.json(); // Use response.text() if the response isn't JSON
+    console.log("Response Data:", data);
+  } catch (error) {
+    console.error("Error:", error.message);
+  }
+})();

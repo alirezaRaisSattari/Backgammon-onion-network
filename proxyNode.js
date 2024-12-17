@@ -2,85 +2,106 @@ const http = require("http");
 const httpProxy = require("http-proxy");
 const crypto = require("crypto");
 
-// Secret key for encryption (you could make this dynamic per node if needed)
-const ENCRYPTION_KEY = "0123456789abcdef0123456789abcdef"; // 32-byte key for AES-256
-const ALGORITHM = "aes-256-cbc";
+const ENCRYPTION_KEY = crypto.randomBytes(32); // Generate a 256-bit key
+const IV_LENGTH = 16; // AES block size
 
-// Encrypt function
-function encrypt(data, key) {
-  const iv = crypto.randomBytes(16); // Initialization vector
-  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
-  let encrypted = cipher.update(data, "utf8", "hex");
-  encrypted += cipher.final("hex");
-  return iv.toString("hex") + encrypted; // Prepend IV to the encrypted data
+function encryptStream(key, iv, input) {
+  const cipher = crypto.createCipheriv("aes-256-ctr", key, iv);
+  return input.pipe(cipher);
 }
 
-// Decrypt function
-function decrypt(data, key) {
-  const iv = Buffer.from(data.slice(0, 32), "hex"); // Extract the first 16 bytes as the IV
-  const encrypted = data.slice(32); // Extract the encrypted data
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
-  let decrypted = decipher.update(encrypted, "hex", "utf8");
-  decrypted += decipher.final("utf8");
-  return decrypted;
+function decryptStream(key, iv, input) {
+  const decipher = crypto.createDecipheriv("aes-256-ctr", key, iv);
+  return input.pipe(decipher);
 }
 
-// Function to create a specified number of proxy nodes
-function createProxyNodes(numNodes, startPort) {
-  let currentPort = startPort;
-
-  // Loop to create each proxy node
-  for (let i = 1; i <= numNodes; i++) {
-    createProxyNode(i, currentPort);
-    currentPort++;
-  }
+function logBody(stream, callback) {
+  let bodyChunks = [];
+  stream.on("data", (chunk) => bodyChunks.push(chunk));
+  stream.on("end", () => {
+    const body = Buffer.concat(bodyChunks).toString();
+    callback(body);
+  });
 }
 
-// Function to create a single proxy node
 function createProxyNode(nodeNumber, port) {
   const proxy = httpProxy.createProxyServer({});
-
-  // Define the target for the next node in the chain
   const nextPort = port + 1;
 
-  // Create the HTTP server for each proxy node
   const server = http.createServer((req, res) => {
-    let data = "";
+    try {
+      let iv;
+      const isFirstNode = nodeNumber === 1;
+      const isLastNode = nodeNumber === 3;
 
-    req.on("data", (chunk) => {
-      data += chunk;
-    });
-
-    req.on("end", () => {
-      try {
-        // Decrypt the data at each node (except for the first node)
-        if (nodeNumber !== 1) {
-          data = decrypt(data, ENCRYPTION_KEY);
+      if (isFirstNode) {
+        iv = crypto.randomBytes(IV_LENGTH);
+        req.headers["x-init-vector"] = iv.toString("hex");
+      } else {
+        const ivHeader = req.headers["x-init-vector"];
+        if (!ivHeader) {
+          throw new Error(`Missing x-init-vector header at Node ${nodeNumber}`);
         }
-
-        console.log(`Node ${nodeNumber} received data: ${data}`);
-
-        // If it's the last node, forward to the target server
-        if (nodeNumber === 3) {
-          // Optionally, encrypt data before sending to the target
-          const encryptedData = encrypt(data, ENCRYPTION_KEY);
-          proxy.web(req, res, {
-            target: "http://localhost:8000",
-            selfHandleResponse: true,
-          });
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(encryptedData);
-        } else {
-          // Encrypt data before forwarding it to the next node
-          const encryptedData = encrypt(data, ENCRYPTION_KEY);
-          proxy.web(req, res, { target: `http://localhost:${nextPort}` });
-        }
-      } catch (error) {
-        console.error("Decryption error:", error);
-        res.statusCode = 500;
-        res.end("Error in processing the request");
+        iv = Buffer.from(ivHeader, "hex");
       }
-    });
+
+      let processedStream = req;
+
+      // Log the body before processing
+      if (!isFirstNode) {
+        processedStream = decryptStream(ENCRYPTION_KEY, iv, req);
+        logBody(processedStream, (body) =>
+          console.log(`Node ${nodeNumber} decrypted body:`, body)
+        );
+      } else {
+        logBody(processedStream, (body) =>
+          console.log(`Node ${nodeNumber} received body:`, body)
+        );
+      }
+
+      // Forward the request
+      if (isLastNode) {
+        const options = {
+          hostname: "localhost",
+          port: 8000,
+          method: req.method,
+          path: req.url,
+          headers: req.headers,
+        };
+
+        const externalReq = http.request(options, (externalRes) => {
+          res.writeHead(externalRes.statusCode, externalRes.headers);
+          externalRes.pipe(res).on("finish", () => {
+            console.log(`Node ${nodeNumber} completed request to server: 8000`);
+          });
+        });
+
+        externalReq.on("error", (error) => {
+          console.error(`Node ${nodeNumber} error:`, error.message);
+          res.statusCode = 500;
+          res.end("Error contacting external server");
+        });
+
+        processedStream.pipe(externalReq);
+      } else {
+        const nextIv = crypto.randomBytes(IV_LENGTH);
+        req.headers["x-init-vector"] = nextIv.toString("hex");
+
+        const encryptedStream = encryptStream(
+          ENCRYPTION_KEY,
+          nextIv,
+          processedStream
+        );
+        proxy.web(req, res, {
+          target: `http://localhost:${nextPort}`,
+          buffer: encryptedStream,
+        });
+      }
+    } catch (error) {
+      console.error(`Node ${nodeNumber} error:`, error.message);
+      res.statusCode = 500;
+      res.end("Error in processing the request");
+    }
   });
 
   server.listen(port, () => {
@@ -90,5 +111,17 @@ function createProxyNode(nodeNumber, port) {
   });
 }
 
-// Create 3 proxy nodes starting from port 3000
+// Function to create a specified number of proxy nodes
+function createProxyNodes(numNodes, startPort) {
+  let currentPort = startPort;
+
+  for (let i = 1; i <= numNodes; i++) {
+    createProxyNode(i, currentPort);
+    currentPort++;
+  }
+}
+
+// router for client1
 createProxyNodes(3, 3000);
+// router for client2
+createProxyNodes(3, 4000);
