@@ -2,8 +2,11 @@ const http = require("http");
 const httpProxy = require("http-proxy");
 const crypto = require("crypto");
 
-const ENCRYPTION_KEY = crypto.randomBytes(32); // Generate a 256-bit key
+const ENCRYPTION_KEY = crypto.randomBytes(32); // 256-bit key
 const IV_LENGTH = 16; // AES block size
+
+// Track IVs for each request-response cycle
+const ivMap = new Map();
 
 function encryptStream(key, iv, input) {
   const cipher = crypto.createCipheriv("aes-256-ctr", key, iv);
@@ -35,9 +38,11 @@ function createProxyNode(nodeNumber, port) {
       const isLastNode = nodeNumber === 3;
 
       if (isFirstNode) {
+        // Generate a new IV for the request at the first node
         iv = crypto.randomBytes(IV_LENGTH);
         req.headers["x-init-vector"] = iv.toString("hex");
       } else {
+        // Extract the IV from the header
         const ivHeader = req.headers["x-init-vector"];
         if (!ivHeader) {
           throw new Error(`Missing x-init-vector header at Node ${nodeNumber}`);
@@ -47,7 +52,7 @@ function createProxyNode(nodeNumber, port) {
 
       let processedStream = req;
 
-      // Log the body before processing
+      // Decrypt incoming request body at intermediate and exit nodes
       if (!isFirstNode) {
         processedStream = decryptStream(ENCRYPTION_KEY, iv, req);
         logBody(processedStream, (body) =>
@@ -59,7 +64,7 @@ function createProxyNode(nodeNumber, port) {
         );
       }
 
-      // Forward the request
+      // Handle request at exit node or forward
       if (isLastNode) {
         const options = {
           hostname: "localhost",
@@ -70,9 +75,22 @@ function createProxyNode(nodeNumber, port) {
         };
 
         const externalReq = http.request(options, (externalRes) => {
-          res.writeHead(externalRes.statusCode, externalRes.headers);
-          externalRes.pipe(res).on("finish", () => {
-            console.log(`Node ${nodeNumber} completed request to server: 8000`);
+          // Encrypt the response from the server using the original request IV
+          const responseIv = iv;
+          res.setHeader("x-response-vector", responseIv.toString("hex"));
+
+          logBody(externalRes, (body) =>
+            console.log(`Node ${nodeNumber} server response:`, body)
+          );
+
+          const encryptedStream = encryptStream(
+            ENCRYPTION_KEY,
+            responseIv,
+            externalRes
+          );
+          encryptedStream.pipe(res).on("finish", () => {
+            console.log(`Node ${nodeNumber} sent encrypted response`);
+            encryptedStream.end();
           });
         });
 
@@ -82,16 +100,25 @@ function createProxyNode(nodeNumber, port) {
           res.end("Error contacting external server");
         });
 
-        processedStream.pipe(externalReq);
+        processedStream.pipe(externalReq).on("finish", () => {
+          processedStream.end();
+        });
       } else {
+        // Encrypt request body and forward to the next node
         const nextIv = crypto.randomBytes(IV_LENGTH);
         req.headers["x-init-vector"] = nextIv.toString("hex");
+
+        // Track IV for this request-response cycle
+        const requestId = req.headers["x-request-id"] || crypto.randomUUID();
+        req.headers["x-request-id"] = requestId;
+        ivMap.set(requestId, nextIv);
 
         const encryptedStream = encryptStream(
           ENCRYPTION_KEY,
           nextIv,
           processedStream
         );
+
         proxy.web(req, res, {
           target: `http://localhost:${nextPort}`,
           buffer: encryptedStream,
