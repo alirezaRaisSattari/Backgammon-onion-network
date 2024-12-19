@@ -30,47 +30,25 @@ function logBody(stream, callback) {
 function createProxyNode(nodeNumber, port) {
   const proxy = httpProxy.createProxyServer({});
   const nextPort = port + 1;
-  const isFirstNode = nodeNumber === 1;
-  const isSecondNode = nodeNumber === 2;
-  const isLastNode = nodeNumber === 3;
+  
+  if (isSecondNode) {
+    proxy.on("proxyRes", (proxyRes, req, res, options) => {
+      const previousIv = Buffer.from(req.headers["x-init-vector"], "hex");
 
-  if (isFirstNode) {
-    proxy.on("proxyRes", (proxyReq, req, res, options) => {
-      // const previousIv = Buffer.from(req.headers["x-init-vector"], "hex");
-
-      // const decryptedStream = decryptStream(
-      //   ENCRYPTION_KEY,
-      //   previousIv,
-      //   proxyReq
-      // );
-      logBody(proxyReq, (body) => {
+      const decryptedStream = decryptStream(
+        ENCRYPTION_KEY,
+        previousIv,
+        proxyRes
+      );
+      logBody(decryptedStream, (body) => {
         console.log(`Node ${nodeNumber} decrypted response:`, body);
         // decryptedStream.end();
       });
 
-      // decryptedStream.pipe(res).on("finish", () => {
-      //   console.log(`Node ${nodeNumber} sent encrypted response`);
-      //   // decryptedStream.end();
-      // });
-    });
-  }
-
-  if (isSecondNode) {
-    proxy.on("proxyRes", (proxyReq, req, res, options) => {
-      // const previousIv = Buffer.from(req.headers["x-init-vector"], "hex");
-      // const decryptedStream = decryptStream(
-      //   ENCRYPTION_KEY,
-      //   previousIv,
-      //   proxyReq
-      // );
-      // logBody(decryptedStream, (body) => {
-      //   console.log(`Node ${nodeNumber} decrypted response:`, body);
-      //   // decryptedStream.end();
-      // });
-      // decryptStream.pipe(res).on("finish", () => {
-      //   console.log(`Node ${nodeNumber} sent encrypted response`);
-      //   // decryptedStream.end();
-      // });
+      decryptedStream.pipe(res).on("finish", () => {
+        console.log(`Node ${nodeNumber} sent encrypted response`);
+        // decryptedStream.end();
+      });
     });
   }
 
@@ -129,7 +107,7 @@ function createProxyNode(nodeNumber, port) {
             responseIv,
             externalRes
           );
-          externalRes.pipe(res).on("finish", () => {
+          encryptedStream.pipe(res).on("finish", () => {
             console.log(`Node ${nodeNumber} sent encrypted response`);
             encryptedStream.end();
           });
@@ -179,17 +157,4 @@ function createProxyNode(nodeNumber, port) {
   });
 }
 
-// Function to create a specified number of proxy nodes
-function createProxyNodes(numNodes, startPort) {
-  let currentPort = startPort;
-
-  for (let i = 1; i <= numNodes; i++) {
-    createProxyNode(i, currentPort);
-    currentPort++;
-  }
-}
-
-// router for client1
-createProxyNodes(3, 3000);
-// router for client2
-createProxyNodes(3, 4000);
+createProxyNode(3001);
